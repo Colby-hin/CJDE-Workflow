@@ -4,7 +4,7 @@ id: 04f639b1-5fe6-4d94-bc50-aed8fe471d2a
 
 status: test
 
-description: Detects Certutil being used with an HTTP or HTTPS URL
+description: Detects Certutil being used to download a file over HTTP or HTTPS
 
 author: Colby Hinchy
 
@@ -23,7 +23,11 @@ detection:
       - 'http://'
       - 'https://'
 
-  condition: selection_image and selection_url
+  selection_download:
+    CommandLine|contains:
+      - '-urlcache'
+
+  condition: selection_image and selection_url and selection_download
 
 falsepositives:
   - Legitimate administrative use of certutil
