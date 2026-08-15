@@ -24,7 +24,7 @@ jobs:
 
   validate:
     name: Validate Sigma Rules
-    runs-on: [self-hosted, Linux, X64, graylog]
+    runs-on: ubuntu-latest
 
     steps:
 
