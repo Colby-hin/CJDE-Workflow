@@ -59,17 +59,16 @@ jobs:
           fetch-depth: 0
 
 
-      - name: Set Up Python
-        uses: actions/setup-python@v7
-        with:
-          python-version: "3.13"
+      
 
 
-      - name: Install Dependencies
+      - name: Create Python Environment and Install Dependencies
+        shell: bash
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install sigma-cli requests
-          sigma plugin install elasticsearch
+          python3 -m venv "$RUNNER_TEMP/graylog-venv"
+          "$RUNNER_TEMP/graylog-venv/bin/python" -m pip install --upgrade pip
+          "$RUNNER_TEMP/graylog-venv/bin/python" -m pip install sigma-cli requests
+          "$RUNNER_TEMP/graylog-venv/bin/sigma" plugin install elasticsearch
 
 
       - name: Find Changed Sigma Rules
@@ -157,7 +156,7 @@ jobs:
 
             echo "Converting Sigma rule to Lucene query..."
 
-            if ! graylog_query=$(sigma convert \
+            if ! graylog_query=$("$RUNNER_TEMP/graylog-venv/bin/sigma" convert \
               -t lucene \
               -p ecs_windows \
               "$file"); then
@@ -186,7 +185,7 @@ jobs:
             echo "Deploying rule to Graylog..."
 
 
-            if python scripts/deploy_to_graylog.py \
+           if "$RUNNER_TEMP/graylog-venv/bin/python" scripts/deploy_to_graylog.py \
               --url "$GRAYLOG_URL" \
               --token "$GRAYLOG_TOKEN" \
               --rule "$rule_name" \
