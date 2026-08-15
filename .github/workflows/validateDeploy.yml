@@ -1,66 +1,117 @@
-name: Convert and Deploy Modified Sigma Rules
+name: Validate, Convert, and Deploy Sigma Rules to Graylog
 
 on:
   push:
+    branches:
+      - main
     paths:
       - "rules/**/*.yml"
+      - "rules/**/*.yaml"
 
   pull_request:
+    branches:
+      - main
     paths:
       - "rules/**/*.yml"
+      - "rules/**/*.yaml"
 
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
+
   validate:
+    name: Validate Sigma Rules
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 2
 
-      - name: Validate Sigma rules
+      - name: Checkout Repository
+        uses: actions/checkout@v7
+
+      - name: Validate Sigma Rules
         uses: SigmaHQ/sigma-rules-validator@v1
         with:
           paths: |
             ./rules
-          schemaFile: ./sigma-schema.json
+          schemaFile: ${{ github.workspace }}/sigma-schema.json
+
 
   convert-and-deploy:
+    name: Convert and Deploy to Graylog
+
     needs: validate
-    runs-on: ubuntu-latest
 
     if: >
-      github.event_name == 'push' &&
-      (github.ref == 'refs/heads/main' ||
-       github.ref == 'refs/heads/master')
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' &&
+       github.ref == 'refs/heads/main')
+
+    runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
+
+      - name: Checkout Repository
         uses: actions/checkout@v7
         with:
-          fetch-depth: 2
+          fetch-depth: 0
 
-      - name: Set up Python
+
+      - name: Set Up Python
         uses: actions/setup-python@v7
         with:
           python-version: "3.13"
 
-      - name: Install dependencies
+
+      - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install sigma-cli requests
-          sigma plugin install splunk
+          python -m pip install sigma-cli requests
+          sigma plugin install elasticsearch
 
-      - name: Find Changed Files
+
+      - name: Find Changed Sigma Rules
         id: changed-files
         shell: bash
-        run: |
-          CHANGED_FILES=$(git diff --name-only HEAD^ HEAD -- rules | grep -E '\.yml$' || echo "")
 
-          echo "$CHANGED_FILES"
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+
+            CHANGED_FILES=$(find rules -type f \( -name "*.yml" -o -name "*.yaml" \) | sort)
+
+          else
+
+            BEFORE="${{ github.event.before }}"
+            AFTER="${{ github.sha }}"
+
+            if [[ "$BEFORE" =~ ^0+$ ]]; then
+
+              CHANGED_FILES=$(find rules -type f \( -name "*.yml" -o -name "*.yaml" \) | sort)
+
+            else
+
+              CHANGED_FILES=$(git diff \
+                --name-only \
+                --diff-filter=AM \
+                "$BEFORE" \
+                "$AFTER" \
+                -- rules \
+                | grep -E '\.ya?ml$' || true)
+
+            fi
+          fi
+
+          echo "Changed Sigma rules:"
+
+          if [[ -n "$CHANGED_FILES" ]]; then
+            echo "$CHANGED_FILES"
+          else
+            echo "None"
+          fi
 
           {
             echo "changed_files<<EOF"
@@ -68,65 +119,103 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
+
       - name: Convert and Deploy Changed Sigma Rules
         shell: bash
 
         env:
-          SPLUNK_URL: ${{ secrets.SPLUNK_URL }}
-          SPLUNK_TOKEN: ${{ secrets.SPLUNK_API_TOKEN }}
+          GRAYLOG_URL: ${{ secrets.GRAYLOG_URL }}
+          GRAYLOG_TOKEN: ${{ secrets.GRAYLOG_API_TOKEN }}
+          CHANGED_FILES: ${{ steps.changed-files.outputs.changed_files }}
 
         run: |
-          if [ -z "${{ steps.changed-files.outputs.changed_files }}" ]; then
-            echo "No Sigma rules were modified in this commit."
+          set -uo pipefail
+
+          if [[ -z "${CHANGED_FILES//[$'\t\r\n ']/}" ]]; then
+            echo "No Sigma rules need processing."
             exit 0
           fi
 
           success_count=0
           failure_count=0
 
-          for file in ${{ steps.changed-files.outputs.changed_files }}; do
-            rule_name=$(basename "$file" .yml)
+          while IFS= read -r file; do
 
-            echo "------------------------------------"
-            echo "Processing $file"
-            echo "Rule: $rule_name"
+            [[ -n "$file" ]] || continue
 
-            echo "Converting to Splunk SPL..."
-
-            spl_query=$(sigma convert \
-              -t splunk \
-              -f default \
-              "$file" \
-              --without-pipeline)
-
-            if [ -z "$spl_query" ]; then
-              echo "ERROR: Empty SPL query generated for $file"
-              failure_count=$((failure_count + 1))
+            if [[ ! -f "$file" ]]; then
+              echo "Skipping missing file: $file"
               continue
             fi
 
-            echo "SPL query generated successfully"
-            echo "Deploying to Splunk..."
+            rule_name=$(basename "${file%.*}")
 
-            python scripts/deploy_to_splunk.py \
-              --url "$SPLUNK_URL" \
-              --token "$SPLUNK_TOKEN" \
-              --rule "$rule_name" \
-              --query "$spl_query" \
-              --actions "log"
+            echo "========================================"
+            echo "Processing Sigma rule: $file"
+            echo "Rule name: $rule_name"
+            echo "========================================"
 
-            deploy_status=$?
+            echo "Converting Sigma rule to Lucene query..."
 
-            if [ $deploy_status -eq 0 ]; then
-              echo "Rule deployed successfully to Splunk"
-              success_count=$((success_count + 1))
-            else
-              echo "ERROR: Failed to deploy rule to Splunk"
+            if ! graylog_query=$(sigma convert \
+              -t lucene \
+              -p ecs_windows \
+              "$file"); then
+
+              echo "ERROR: Sigma conversion failed for $file"
+
               failure_count=$((failure_count + 1))
-            fi
-          done
 
-          echo "------------------------------------"
-          echo "Conversion and deployment complete."
-          echo "Success: $success_count rules"
-          echo "Failures: $failure_count rules"
+              continue
+            fi
+
+
+            if [[ -z "$graylog_query" ]]; then
+
+              echo "ERROR: Empty Lucene query generated for $file"
+
+              failure_count=$((failure_count + 1))
+
+              continue
+            fi
+
+
+            echo "Lucene query generated successfully:"
+            echo "$graylog_query"
+
+            echo "Deploying rule to Graylog..."
+
+
+            if python scripts/deploy_to_graylog.py \
+              --url "$GRAYLOG_URL" \
+              --token "$GRAYLOG_TOKEN" \
+              --rule "$rule_name" \
+              --query "$graylog_query"; then
+
+              echo "Rule deployed successfully to Graylog"
+
+              success_count=$((success_count + 1))
+
+            else
+
+              echo "ERROR: Failed to deploy rule to Graylog"
+
+              failure_count=$((failure_count + 1))
+
+            fi
+
+
+          done <<< "$CHANGED_FILES"
+
+
+          echo
+          echo "========================================"
+          echo "Graylog deployment complete"
+          echo "Successful rules: $success_count"
+          echo "Failed rules:     $failure_count"
+          echo "========================================"
+
+
+          if (( failure_count > 0 )); then
+            exit 1
+          fi
