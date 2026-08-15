@@ -1,0 +1,33 @@
+title: Powershell_encoded_command.yml
+
+id: 862513c8-5f57-4729-a975-3a1db4564d39
+
+status: test
+
+desription: Detects PowerShell being executed with the EncodedCommand option
+
+author: Colby Hinchy
+
+date: 2026-08-15
+
+logsource:
+  category: process_creation
+  product: windows
+
+detection:
+  selection_image:
+    Image|endswith:
+      - '\powershell.exe'
+      - '\pwsh.exe'
+
+  selection_encoded:
+    CommandLine|contains:
+      - '-EncodedCommand'
+      - '-enc'
+
+  condition: selection_image and selection_encoded
+
+falsepositives:
+  - Legitimate administrative scripts using encoded PowerShell commands
+
+level: medium
