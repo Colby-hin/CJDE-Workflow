@@ -24,7 +24,7 @@ jobs:
 
   validate:
     name: Validate Sigma Rules
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, graylog]
 
     steps:
 
@@ -49,7 +49,7 @@ jobs:
       (github.event_name == 'push' &&
        github.ref == 'refs/heads/main')
 
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, graylog]
 
     steps:
 
