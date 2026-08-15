@@ -20,6 +20,7 @@ on:
 permissions:
   contents: read
 
+
 jobs:
 
   validate:
@@ -59,16 +60,23 @@ jobs:
           fetch-depth: 0
 
 
-      
-
-
       - name: Create Python Environment and Install Dependencies
         shell: bash
         run: |
+          set -e
+
+          rm -rf "$RUNNER_TEMP/graylog-venv"
+
           python3 -m venv "$RUNNER_TEMP/graylog-venv"
-          "$RUNNER_TEMP/graylog-venv/bin/python" -m pip install --upgrade pip
-          "$RUNNER_TEMP/graylog-venv/bin/python" -m pip install sigma-cli requests
-          "$RUNNER_TEMP/graylog-venv/bin/sigma" plugin install elasticsearch
+
+          "$RUNNER_TEMP/graylog-venv/bin/python" \
+            -m pip install --upgrade pip
+
+          "$RUNNER_TEMP/graylog-venv/bin/python" \
+            -m pip install sigma-cli requests
+
+          "$RUNNER_TEMP/graylog-venv/bin/sigma" \
+            plugin install elasticsearch
 
 
       - name: Find Changed Sigma Rules
@@ -80,7 +88,10 @@ jobs:
 
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
 
-            CHANGED_FILES=$(find rules -type f \( -name "*.yml" -o -name "*.yaml" \) | sort)
+            CHANGED_FILES=$(find rules \
+              -type f \
+              \( -name "*.yml" -o -name "*.yaml" \) \
+              | sort)
 
           else
 
@@ -89,7 +100,10 @@ jobs:
 
             if [[ "$BEFORE" =~ ^0+$ ]]; then
 
-              CHANGED_FILES=$(find rules -type f \( -name "*.yml" -o -name "*.yaml" \) | sort)
+              CHANGED_FILES=$(find rules \
+                -type f \
+                \( -name "*.yml" -o -name "*.yaml" \) \
+                | sort)
 
             else
 
@@ -102,7 +116,9 @@ jobs:
                 | grep -E '\.ya?ml$' || true)
 
             fi
+
           fi
+
 
           echo "Changed Sigma rules:"
 
@@ -111,6 +127,7 @@ jobs:
           else
             echo "None"
           fi
+
 
           {
             echo "changed_files<<EOF"
@@ -131,61 +148,81 @@ jobs:
           set -uo pipefail
 
           if [[ -z "${CHANGED_FILES//[$'\t\r\n ']/}" ]]; then
+
             echo "No Sigma rules need processing."
             exit 0
+
           fi
+
 
           success_count=0
           failure_count=0
+
 
           while IFS= read -r file; do
 
             [[ -n "$file" ]] || continue
 
+
             if [[ ! -f "$file" ]]; then
+
               echo "Skipping missing file: $file"
               continue
+
             fi
+
 
             rule_name=$(basename "${file%.*}")
 
+
+            echo
             echo "========================================"
             echo "Processing Sigma rule: $file"
             echo "Rule name: $rule_name"
             echo "========================================"
 
-            echo "Converting Sigma rule to Lucene query..."
 
-            if ! graylog_query=$("$RUNNER_TEMP/graylog-venv/bin/sigma" convert \
-              -t lucene \
-              -p ecs_windows \
-              "$file"); then
+            echo "Converting Sigma rule to Graylog Lucene query..."
+
+
+            if ! graylog_query=$(
+              "$RUNNER_TEMP/graylog-venv/bin/sigma" convert \
+                -t lucene \
+                -p pipelines/graylog-gim.yml \
+                "$file"
+            ); then
 
               echo "ERROR: Sigma conversion failed for $file"
 
               failure_count=$((failure_count + 1))
 
               continue
+
             fi
 
 
             if [[ -z "$graylog_query" ]]; then
 
-              echo "ERROR: Empty Lucene query generated for $file"
+              echo "ERROR: Empty Graylog query generated for $file"
 
               failure_count=$((failure_count + 1))
 
               continue
+
             fi
 
 
-            echo "Lucene query generated successfully:"
+            echo
+            echo "Graylog query generated successfully:"
             echo "$graylog_query"
+            echo
+
 
             echo "Deploying rule to Graylog..."
 
 
-           if "$RUNNER_TEMP/graylog-venv/bin/python" scripts/deploy_to_graylog.py \
+            if "$RUNNER_TEMP/graylog-venv/bin/python" \
+              scripts/deploy_to_graylog.py \
               --url "$GRAYLOG_URL" \
               --token "$GRAYLOG_TOKEN" \
               --rule "$rule_name" \

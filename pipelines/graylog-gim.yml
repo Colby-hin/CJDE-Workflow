@@ -1,0 +1,17 @@
+name: Graylog GIM Windows Process Mapping
+priority: 100
+
+transformations:
+  - id: graylog_windows_process_field_mapping
+    type: field_name_mapping
+    mapping:
+      Image: process_path
+      CommandLine: process_command_line
+      ProcessId: process_id
+      ParentImage: process_parent_path
+      ParentCommandLine: process_parent_command_line
+      ParentProcessId: process_parent_id
+    rule_conditions:
+      - type: logsource
+        category: process_creation
+        product: windows
