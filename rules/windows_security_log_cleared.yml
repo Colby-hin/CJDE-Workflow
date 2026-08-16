@@ -1,0 +1,26 @@
+title: Windows Security Audit Log Cleared
+
+id: fd22ad08-5aa8-4387-90ab-f9d2b5b3a46b
+
+status: test
+
+description: Detects when the Windows Security audit log is cleared
+
+author: Colby Hinchy
+
+date: 2026-08-16
+
+logsource:
+  product: windows
+  service: security
+
+detection:
+  selection:
+    EventID: 1102
+
+  condition: selection
+
+falsepositives:
+  - Legitimate administrative or maintenance activity
+
+level: high
