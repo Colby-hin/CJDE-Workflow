@@ -218,15 +218,24 @@ jobs:
             echo
 
 
-            echo "Deploying rule to Graylog..."
 
+
+            level="$(awk -F': *' '/^level:/ {print $2; exit}' "$file" | xargs)"
+
+            if [ -z "$level" ]; then
+              level="medium"
+            fi
+
+            echo "Sigma severity: $level"
+            echo "Deploying rule to Graylog..."
 
             if "$RUNNER_TEMP/graylog-venv/bin/python" \
               scripts/deploy_to_graylog.py \
               --url "$GRAYLOG_URL" \
               --token "$GRAYLOG_TOKEN" \
               --rule "$rule_name" \
-              --query "$graylog_query"; then
+              --query "$graylog_query" \
+              --level "$level"; then
 
               echo "Rule deployed successfully to Graylog"
 

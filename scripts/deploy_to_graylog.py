@@ -11,11 +11,27 @@ def fail(message):
     sys.exit(1)
 
 
-def build_event_definition(rule_name, query):
+def sigma_level_to_graylog_priority(level):
+    level = level.lower().strip()
+
+    mapping = {
+        "informational": 1,
+        "low": 1,
+        "medium": 2,
+        "high": 3,
+        "critical": 3,
+    }
+
+    return mapping.get(level, 2)
+
+
+def build_event_definition(rule_name, query, level):
+    priority = sigma_level_to_graylog_priority(level)
+
     return {
         "title": rule_name,
         "description": "Managed by GitHub Actions from a Sigma detection rule",
-        "priority": 2,
+        "priority": priority,
         "alert": True,
 
         "config": {
@@ -53,41 +69,8 @@ def build_event_definition(rule_name, query):
 
         "notifications": [],
         "storage": [],
-
-       
-
-        
         "state": "ENABLED",
     }
-
-
-def find_existing_definition(session, base_url, rule_name):
-    url = f"{base_url}/api/events/definitions"
-
-    response = session.get(
-        url,
-        params={
-            "page": 1,
-            "per_page": 200,
-        },
-        timeout=30,
-    )
-
-    if not response.ok:
-        fail(
-            f"Could not list Graylog event definitions. "
-            f"HTTP {response.status_code}: {response.text}"
-        )
-
-    data = response.json()
-
-    definitions = data.get("event_definitions", [])
-
-    for definition in definitions:
-        if definition.get("title") == rule_name:
-            return definition
-
-    return None
 
 
 def main():
@@ -98,25 +81,31 @@ def main():
     parser.add_argument(
         "--url",
         required=True,
-        help="Graylog base URL, for example http://127.0.0.1:9000",
+        help="Graylog base URL",
     )
 
     parser.add_argument(
         "--token",
         required=True,
-        help="Graylog REST API token",
+        help="Graylog API token",
     )
 
     parser.add_argument(
         "--rule",
         required=True,
-        help="Name of the detection rule",
+        help="Rule name",
     )
 
     parser.add_argument(
         "--query",
         required=True,
-        help="Graylog/Lucene query generated from Sigma",
+        help="Graylog Lucene query",
+    )
+
+    parser.add_argument(
+        "--level",
+        default="medium",
+        help="Sigma severity level",
     )
 
     args = parser.parse_args()
@@ -125,121 +114,148 @@ def main():
 
     session = requests.Session()
 
-    # Graylog API-token authentication:
-    # username = token value
-    # password = literal word "token"
-    session.auth = (args.token, "token")
+    session.auth = (
+        args.token,
+        "token",
+    )
 
     session.headers.update(
         {
             "Accept": "application/json",
             "Content-Type": "application/json",
-
-            # Required by Graylog for POST/PUT/DELETE requests
-            "X-Requested-By": "github-detection-workflow",
+            "X-Requested-By": "github-actions",
         }
     )
 
-    try:
-        existing = find_existing_definition(
-            session,
-            base_url,
-            args.rule,
+    priority = sigma_level_to_graylog_priority(args.level)
+
+    print(
+        f"Sigma severity: {args.level} "
+        f"-> Graylog priority: {priority}"
+    )
+
+    new_definition = build_event_definition(
+        args.rule,
+        args.query,
+        args.level,
+    )
+
+    response = session.get(
+        f"{base_url}/api/events/definitions",
+        params={
+            "page": 1,
+            "per_page": 200,
+        },
+        timeout=30,
+    )
+
+    if not response.ok:
+        fail(
+            f"Could not retrieve Graylog event definitions: "
+            f"{response.status_code} {response.text}"
         )
 
-        new_definition = build_event_definition(
-            args.rule,
-            args.query,
+    payload = response.json()
+
+    definitions = payload.get(
+        "event_definitions",
+        payload.get("definitions", []),
+    )
+
+    existing = None
+
+    for definition in definitions:
+        if definition.get("title") == args.rule:
+            existing = definition
+            break
+
+    if existing is None:
+        print(
+            f"Creating new Graylog event definition: "
+            f"{args.rule}"
         )
 
-        if existing is None:
-            print(
-                f"Creating Graylog event definition: {args.rule}"
-            )
-
-            url = (
-                f"{base_url}/api/events/definitions"
-                "?schedule=true"
-            )
-
-            # Graylog's create endpoint expects the definition
-            # inside an "entity" object.
-            payload = {
-                "entity": new_definition
-            }
-
-            response = session.post(
-                url,
-                json=payload,
-                timeout=30,
-            )
-
-        else:
-            definition_id = existing["id"]
-
-            print(
-                f"Updating existing Graylog event definition: "
-                f"{args.rule}"
-            )
-
-            url = (
-                f"{base_url}/api/events/definitions/"
-                f"{definition_id}?schedule=true"
-            )
-
-            # Preserve the existing object's ID and server-managed
-            # fields required for an update.
-            updated_definition = existing.copy()
-
-            updated_definition["title"] = (
-                new_definition["title"]
-            )
-
-            updated_definition["description"] = (
-                new_definition["description"]
-            )
-
-            updated_definition["priority"] = (
-                new_definition["priority"]
-            )
-
-            updated_definition["alert"] = (
-                new_definition["alert"]
-            )
-
-            updated_definition["config"] = (
-                new_definition["config"]
-            )
-
-            
-
-            updated_definition.pop("scheduler", None)
-
-            response = session.put(
-                url,
-                json=updated_definition,
-                timeout=30,
-            )
+        response = session.post(
+            f"{base_url}/api/events/definitions?schedule=true",
+            json={
+                "entity": new_definition,
+            },
+            timeout=30,
+        )
 
         if not response.ok:
             fail(
-                f"Graylog rejected the deployment. "
-                f"HTTP {response.status_code}: "
-                f"{response.text}"
+                f"Graylog create failed: "
+                f"{response.status_code} {response.text}"
             )
 
-        result = response.json()
+        print(
+            f"Created Graylog event definition: "
+            f"{args.rule}"
+        )
 
-        print("Graylog deployment succeeded.")
-        print(f"Rule: {args.rule}")
+        return
 
-        if result.get("id"):
-            print(
-                f"Event Definition ID: {result['id']}"
-            )
+    definition_id = existing.get("id")
 
-    except requests.RequestException as error:
-        fail(f"Graylog API request failed: {error}")
+    if not definition_id:
+        fail(
+            "Existing Graylog event definition "
+            "does not contain an ID"
+        )
+
+    print(
+        f"Updating existing Graylog event definition: "
+        f"{args.rule}"
+    )
+
+    url = (
+        f"{base_url}/api/events/definitions/"
+        f"{definition_id}?schedule=true"
+    )
+
+    # Preserve the existing object's ID and server-managed
+    # fields required for an update.
+    updated_definition = existing.copy()
+
+    updated_definition["title"] = (
+        new_definition["title"]
+    )
+
+    updated_definition["description"] = (
+        new_definition["description"]
+    )
+
+    updated_definition["priority"] = (
+        new_definition["priority"]
+    )
+
+    updated_definition["alert"] = (
+        new_definition["alert"]
+    )
+
+    updated_definition["config"] = (
+        new_definition["config"]
+    )
+
+    updated_definition.pop("scheduler", None)
+
+    response = session.put(
+        url,
+        json=updated_definition,
+        timeout=30,
+    )
+
+    if not response.ok:
+        fail(
+            f"Graylog update failed: "
+            f"{response.status_code} {response.text}"
+        )
+
+    print(
+        f"Updated Graylog event definition: "
+        f"{args.rule}"
+    )
 
 
 if __name__ == "__main__":
